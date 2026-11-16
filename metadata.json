@@ -1,0 +1,6 @@
+{
+  "name": "JISAN MOBILE",
+  "description": "Full-stack e-commerce shopping application with Customer and Admin panels powered by Cloud Firestore and Firebase Authentication.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
