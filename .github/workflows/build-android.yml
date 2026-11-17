@@ -2,6 +2,8 @@ name: Build JISAN MOBILE APK
 
 on:
   push:
+    branches:
+      - "**"
   workflow_dispatch:
 
 permissions:
@@ -24,13 +26,17 @@ jobs:
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
 
-      - name: Accept Android SDK licenses
+      - name: Accept Android SDK licenses and install SDK 36.1 packages
         run: |
-          if [ -n "$ANDROID_HOME" ] && [ -d "$ANDROID_HOME/cmdline-tools" ]; then
-            SDKMANAGER=$(find "$ANDROID_HOME/cmdline-tools" -name sdkmanager -type f | head -n 1)
-            if [ -n "$SDKMANAGER" ]; then
-              yes | "$SDKMANAGER" --licenses >/dev/null 2>&1 || true
-            fi
+          SDK_ROOT="${ANDROID_HOME:-$ANDROID_SDK_ROOT}"
+          mkdir -p "$SDK_ROOT/licenses"
+          printf "\n24333f8a63b6825ea9c5514f83c2829b004d1fee\n8933bad161af4178b1185d1a37fbf41ea5269c55\nd56f5187479451eabf01fb78af6dfcb131a6481e\n" > "$SDK_ROOT/licenses/android-sdk-license"
+          printf "\n84831b9409646a918e30573bab4c9c91346d8abd\n" > "$SDK_ROOT/licenses/android-sdk-preview-license"
+
+          SDKMANAGER=$(find "$SDK_ROOT" -name sdkmanager -type f 2>/dev/null | head -n 1)
+          if [ -n "$SDKMANAGER" ]; then
+            yes | "$SDKMANAGER" --sdk_root="$SDK_ROOT" --licenses >/dev/null 2>&1 || true
+            yes | "$SDKMANAGER" --sdk_root="$SDK_ROOT" "platform-tools" "build-tools;36.0.0" "platforms;android-36" "platforms;android-36.1" || true
           fi
 
       - name: Set up Gradle 9.3.1
@@ -38,7 +44,7 @@ jobs:
         with:
           gradle-version: '9.3.1'
 
-      - name: Prepare debug keystore and env fallback
+      - name: Prepare signing keystore and environment fallback
         run: |
           if [ ! -f debug.keystore ] && [ -f debug.keystore.base64 ]; then
             base64 -d debug.keystore.base64 > debug.keystore
@@ -46,28 +52,55 @@ jobs:
           if [ ! -f .env ] && [ -f .env.example ]; then
             cp .env.example .env
           fi
+          if [ ! -f app/google-services.json ]; then
+            echo "ERROR: app/google-services.json is missing!"
+            exit 1
+          fi
 
-      - name: Build JISAN MOBILE Debug APK
-        run: gradle :app:assembleDebug --no-daemon
+      - name: Build JISAN MOBILE APK
+        env:
+          CI_KEYSTORE_B64: ${{ secrets.KEYSTORE_BASE64 }}
+          CI_STORE_PASSWORD: ${{ secrets.STORE_PASSWORD }}
+          CI_KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+        run: |
+          if [ -n "$CI_KEYSTORE_B64" ] && [ -n "$CI_STORE_PASSWORD" ] && [ -n "$CI_KEY_PASSWORD" ]; then
+            echo "$CI_KEYSTORE_B64" | base64 -d > my-upload-key.jks
+            export KEYSTORE_PATH="$PWD/my-upload-key.jks"
+            export STORE_PASSWORD="$CI_STORE_PASSWORD"
+            export KEY_PASSWORD="$CI_KEY_PASSWORD"
+            gradle :app:assembleRelease --no-daemon --stacktrace -Dorg.gradle.jvmargs="-Xmx3g -XX:MaxMetaspaceSize=1g -Dfile.encoding=UTF-8"
+            cp app/build/outputs/apk/release/app-release.apk JISAN-MOBILE.apk
+          else
+            gradle :app:assembleDebug --no-daemon --stacktrace -Dorg.gradle.jvmargs="-Xmx3g -XX:MaxMetaspaceSize=1g -Dfile.encoding=UTF-8"
+            cp app/build/outputs/apk/debug/app-debug.apk JISAN-MOBILE.apk
+          fi
 
-      - name: Package APK binary
-        run: cp app/build/outputs/apk/debug/app-debug.apk JISAN-MOBILE.apk
+      - name: Verify APK integrity and signature
+        run: |
+          test -s JISAN-MOBILE.apk
+          unzip -tqq JISAN-MOBILE.apk
+          SDK_ROOT="${ANDROID_HOME:-$ANDROID_SDK_ROOT}"
+          APKSIGNER=$(find "$SDK_ROOT/build-tools" -name apksigner -type f 2>/dev/null | sort -V | tail -n 1)
+          if [ -n "$APKSIGNER" ]; then
+            "$APKSIGNER" verify --verbose JISAN-MOBILE.apk
+          fi
+          ls -lh JISAN-MOBILE.apk
 
       - name: Upload APK build artifact
         uses: actions/upload-artifact@v4
         with:
           name: JISAN-MOBILE-APK
           path: JISAN-MOBILE.apk
+          retention-days: 90
 
-      - name: Publish direct APK download on GitHub Releases
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          if gh release view latest >/dev/null 2>&1; then
-            gh release upload latest JISAN-MOBILE.apk --clobber
-          else
-            gh release create latest JISAN-MOBILE.apk \
-              --target "${{ github.sha }}" \
-              --title "JISAN MOBILE APK (Latest Build)" \
-              --notes "Direct installable Android APK built automatically from JISAN MOBILE source."
-          fi
+      - name: Publish JISAN-MOBILE.apk to GitHub Releases
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: latest
+          name: "JISAN MOBILE APK (Latest Build)"
+          body: |
+            Automated Android APK build for **JISAN MOBILE** (`com.aistudio.jisanmobile.xkwpqr`).
+            Tap `JISAN-MOBILE.apk` below to download and install directly on Android 7.0+.
+          files: JISAN-MOBILE.apk
+          make_latest: true
+          fail_on_unmatched_files: true
