@@ -23,7 +23,7 @@ jobs:
           distribution: 'temurin'
           java-version: '21'
 
-      - name: Install clean Android SDK Command Line Tools (avoid preinstalled sdkmanager conflict)
+      - name: Install clean Android SDK Command Line Tools
         run: |
           ANDROID_SDK="$HOME/android-sdk"
           rm -rf "$ANDROID_SDK"
@@ -38,7 +38,7 @@ jobs:
           echo "$ANDROID_SDK/cmdline-tools/latest/bin" >> "$GITHUB_PATH"
           echo "$ANDROID_SDK/platform-tools" >> "$GITHUB_PATH"
 
-      - name: Accept Android SDK licenses and install Platform 36, Build Tools 36.0.0, and Platform Tools
+      - name: Accept Android SDK licenses and install SDK Platform 36, Build Tools 36.0.0, and Platform Tools
         run: |
           set +o pipefail
           SDKMANAGER="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
@@ -54,6 +54,56 @@ jobs:
         with:
           gradle-version: '9.3.1'
 
+      - name: Write and validate app/google-services.json from GOOGLE_SERVICES_JSON secret
+        env:
+          GOOGLE_SERVICES_JSON: ${{ secrets.GOOGLE_SERVICES_JSON }}
+        run: |
+          mkdir -p app
+          python3 - <<'PY'
+          import base64
+          import json
+          import os
+          import sys
+
+          target = os.path.join("app", "google-services.json")
+          raw = os.environ.get("GOOGLE_SERVICES_JSON", "")
+
+          if raw.strip():
+              candidate = raw.strip()
+              if not candidate.startswith("{"):
+                  try:
+                      candidate = base64.b64decode(candidate).decode("utf-8").strip()
+                  except Exception:
+                      print("ERROR: GOOGLE_SERVICES_JSON secret is neither valid JSON nor valid base64.", file=sys.stderr)
+                      sys.exit(1)
+              try:
+                  parsed = json.loads(candidate)
+              except Exception:
+                  print("ERROR: GOOGLE_SERVICES_JSON secret does not contain valid JSON.", file=sys.stderr)
+                  sys.exit(1)
+
+              if not isinstance(parsed, dict) or "project_info" not in parsed or "client" not in parsed:
+                  print("ERROR: GOOGLE_SERVICES_JSON secret is missing required Firebase fields (project_info/client).", file=sys.stderr)
+                  sys.exit(1)
+
+              with open(target, "w", encoding="utf-8", newline="\n") as f:
+                  f.write(candidate)
+                  f.write("\n")
+          elif not os.path.isfile(target) or os.path.getsize(target) == 0:
+              print("ERROR: GOOGLE_SERVICES_JSON secret is empty or unavailable and app/google-services.json does not exist.", file=sys.stderr)
+              sys.exit(1)
+
+          # Final non-empty + valid JSON check (never prints secret contents)
+          if not os.path.isfile(target) or os.path.getsize(target) == 0:
+              print("ERROR: app/google-services.json was not written or is empty.", file=sys.stderr)
+              sys.exit(1)
+
+          with open(target, "r", encoding="utf-8") as f:
+              json.load(f)
+
+          print("Verified app/google-services.json exists, is non-empty, and contains valid JSON.")
+          PY
+
       - name: Prepare signing keystore and environment fallback
         run: |
           if [ ! -f debug.keystore ] && [ -f debug.keystore.base64 ]; then
@@ -61,10 +111,6 @@ jobs:
           fi
           if [ ! -f .env ] && [ -f .env.example ]; then
             cp .env.example .env
-          fi
-          if [ ! -f app/google-services.json ]; then
-            echo "ERROR: app/google-services.json is missing!"
-            exit 1
           fi
 
       - name: Build JISAN MOBILE APK
